@@ -1,0 +1,234 @@
+"""Invoice data model and validation.
+
+:class:`InvoiceData` is the single in-memory representation of an invoice,
+shared by every extraction path (ZUGFeRD, text AI, vision AI). Its validators
+enforce the rules from ``docs/invoice-format.md`` so that anything that
+survives :class:`InvoiceData` construction can be rendered into a bookable
+file.
+"""
+
+from __future__ import annotations
+
+import re
+import warnings
+from datetime import date
+from decimal import Decimal, InvalidOperation
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, field_validator
+
+__all__ = ["InvoiceData", "LineItem", "parse_decimal_number", "structured_output_schema"]
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+_IBAN_RE = re.compile(r"^[A-Z]{2}[0-9A-Z]{13,32}$")
+_REQUIRED_TEXT_FIELDS = ("id", "vendor")
+_OPTIONAL_TEXT_FIELDS = ("category", "account", "account_holder", "reference")
+
+# Managed by nexfin itself; never part of the AI-facing schema.
+_MANAGED_FIELDS = ("status", "booked", "paid_date")
+
+
+def parse_decimal_number(raw: Any) -> Decimal:
+    """Parse a number from AI/CII/UBL output into a :class:`~decimal.Decimal`.
+
+    Accepts ``Decimal``, ``int``, ``float`` and strings, tolerating decimal
+    commas (``"119,00"``) and stray thousands separators (``"1.234,56"`` /
+    ``"1,234.56"``).
+    """
+    if isinstance(raw, Decimal):
+        value = raw
+    elif isinstance(raw, bool) or raw is None:
+        raise InvalidOperation(f"not a number: {raw!r}")
+    elif isinstance(raw, int):
+        value = Decimal(raw)
+    elif isinstance(raw, float):
+        value = Decimal(str(raw))
+    elif isinstance(raw, str):
+        text = raw.strip().replace("\u00a0", "").replace(" ", "")
+        if not text:
+            raise InvalidOperation("empty number")
+        if "," in text and "." in text:
+            if text.rfind(",") > text.rfind("."):
+                text = text.replace(".", "").replace(",", ".")
+            else:
+                text = text.replace(",", "")
+        elif "," in text:
+            text = text.replace(",", ".")
+        value = Decimal(text)
+    else:
+        raise InvalidOperation(f"not a number: {raw!r}")
+    if not value.is_finite():
+        raise InvalidOperation(f"not a finite number: {raw!r}")
+    return value
+
+
+class LineItem(BaseModel):
+    """One line of the optional ``## Line items`` body section."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: str
+    quantity: Decimal | None = None
+    amount: Decimal | None = None
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _clean_description(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return " ".join(value.split())
+        return value
+
+    @field_validator("quantity", "amount", mode="before")
+    @classmethod
+    def _coerce_number(cls, value: Any) -> Any:
+        if value is None or value == "":
+            return None
+        return parse_decimal_number(value)
+
+
+class InvoiceData(BaseModel):
+    """Invoice front matter, exactly as documented in ``docs/invoice-format.md``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    vendor: str
+    issued: date
+    due: date
+    amount: Decimal
+    currency: str
+    category: str | None = None
+    account: str | None = None
+    iban: str | None = None
+    account_holder: str | None = None
+    reference: str | None = None
+    status: Literal["open", "paid"] = "open"
+    booked: str = ""
+    paid_date: str = ""
+    line_items: list[LineItem] = []
+
+    # -- required string fields -------------------------------------------
+
+    @field_validator("id", "vendor", mode="before")
+    @classmethod
+    def _require_text(cls, value: Any, info: Any) -> Any:
+        if isinstance(value, str):
+            value = " ".join(value.split())
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{info.field_name} is required and must be non-empty")
+        return value
+
+    # -- optional free-text fields ----------------------------------------
+
+    @field_validator(*_OPTIONAL_TEXT_FIELDS, mode="before")
+    @classmethod
+    def _clean_text(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = " ".join(value.split())
+            if not value:
+                return None
+        return value
+
+    # -- dates ------------------------------------------------------------
+
+    @field_validator("issued", "due", mode="before")
+    @classmethod
+    def _parse_date(cls, value: Any) -> Any:
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str) and _DATE_RE.match(value):
+            try:
+                return date.fromisoformat(value)
+            except ValueError as exc:
+                raise ValueError(f"not a valid calendar date: {value!r}") from exc
+        raise ValueError(f"date must be an ISO YYYY-MM-DD string, got {value!r}")
+
+    # -- amount -----------------------------------------------------------
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def _coerce_amount(cls, value: Any) -> Any:
+        return parse_decimal_number(value)
+
+    @field_validator("amount")
+    @classmethod
+    def _limit_decimals(cls, value: Decimal) -> Decimal:
+        exponent = value.as_tuple().exponent
+        if isinstance(exponent, int) and -exponent > 2:
+            raise ValueError(f"amount must have at most 2 decimal places, got {value}")
+        return value
+
+    # -- currency ---------------------------------------------------------
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def _upper_currency(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip().upper()
+        return value
+
+    @field_validator("currency")
+    @classmethod
+    def _check_currency(cls, value: str) -> str:
+        if not _CURRENCY_RE.match(value):
+            raise ValueError(f"currency must be an ISO 4217 code, got {value!r}")
+        return value
+
+    # -- IBAN -------------------------------------------------------------
+
+    @field_validator("iban", mode="before")
+    @classmethod
+    def _normalize_iban(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.replace(" ", "").replace("-", "").strip().upper()
+            if not value:
+                return None
+        return value
+
+    @field_validator("iban")
+    @classmethod
+    def _check_iban(cls, value: str | None) -> str | None:
+        # Invalid checksums show a warning in the nexfin pay dialog but never
+        # block booking, so we mirror that: warn here, never fail.
+        if value is not None:
+            if not _IBAN_RE.match(value):
+                warnings.warn(
+                    f"iban {value!r} does not look like a valid IBAN", UserWarning, stacklevel=2
+                )
+            elif _iban_mod97(value) != 1:
+                warnings.warn(
+                    f"iban {value!r} fails the ISO 7064 mod-97 checksum",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        return value
+
+
+def _iban_mod97(iban: str) -> int:
+    rearranged = iban[4:] + iban[:4]
+    digits = "".join(str(ord(c) - 55) if c.isalpha() else c for c in rearranged)
+    return int(digits) % 97
+
+
+def structured_output_schema() -> dict[str, Any]:
+    """Build an OpenAI/OpenRouter ``json_schema`` payload for structured output.
+
+    Derived from :class:`InvoiceData` with the nexfin-managed fields removed,
+    ``additionalProperties: false`` everywhere and every remaining property
+    marked required, as required by strict structured outputs.
+    """
+    schema: dict[str, Any] = InvoiceData.model_json_schema()
+    schema.pop("title", None)
+    for field_name in _MANAGED_FIELDS:
+        schema.get("properties", {}).pop(field_name, None)
+    for node in [schema, *schema.get("$defs", {}).values()]:
+        if node.get("type") == "object":
+            properties = node.get("properties", {})
+            node["additionalProperties"] = False
+            node["required"] = list(properties)
+    return {
+        "name": "invoice_data",
+        "strict": True,
+        "schema": schema,
+    }
