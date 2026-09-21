@@ -12,6 +12,14 @@ from conftest import (
     CII_INVOICE_CURRENCY_VARIANT_XML,
     CII_INVOICE_XML,
     CII_MISSING_DUE_XML,
+    CII_SKONTO_CREDIT_NOTE_XML,
+    CII_SKONTO_OVERSIZE_XML,
+    CII_SKONTO_PERCENT_XML,
+    CII_SKONTO_PERIOD_ONLY_XML,
+    CII_SKONTO_XML,
+    CII_SKONTO_ZERO_XML,
+    UBL_SKONTO_XML,
+    ZUGFERD1_SKONTO_XML,
     ZUGFERD1_XML,
     make_zugferd_pdf,
 )
@@ -36,6 +44,8 @@ def test_finds_and_parses_cii_invoice(tmp_path) -> None:
     assert data.iban == "DE89370400440532013000"  # spaces/hyphens stripped
     assert data.account_holder == "Muller GmbH"
     assert data.reference == "RE-2026-0912"
+    assert data.due_skonto is None
+    assert data.amount_skonto is None
     assert extracted.is_credit_note is False
 
 
@@ -43,6 +53,131 @@ def test_credit_note_381_flagged(tmp_path) -> None:
     extracted = parse_invoice_xml(CII_CREDIT_NOTE_XML)
     assert extracted.is_credit_note is True
     assert extracted.data.amount == Decimal("59.00")
+
+
+# -- skonto -----------------------------------------------------------------
+
+
+def test_cii_skonto_absolute_values() -> None:
+    extracted = parse_invoice_xml(CII_SKONTO_XML)
+    data = extracted.data
+    assert str(data.due_skonto) == "2026-09-10"
+    assert data.amount_skonto == Decimal("111.86")  # 119.00 - 7.14, absolute
+    assert extracted.is_credit_note is False
+
+
+def test_cii_skonto_percent_computed_from_basis() -> None:
+    extracted = parse_invoice_xml(CII_SKONTO_PERCENT_XML)
+    assert extracted.data.due_skonto is not None
+    assert extracted.data.amount_skonto == Decimal("115.43")  # 119.00 - 3%
+
+
+def test_cii_skonto_without_deadline_warns_and_omits() -> None:
+    with pytest.warns(UserWarning, match="skonto"):
+        extracted = parse_invoice_xml(CII_SKONTO_PERIOD_ONLY_XML)
+    assert extracted.data.due_skonto is None
+    assert extracted.data.amount_skonto is None
+
+
+def test_cii_skonto_oversize_warns_and_omits() -> None:
+    with pytest.warns(UserWarning, match="skonto"):
+        extracted = parse_invoice_xml(CII_SKONTO_OVERSIZE_XML)
+    assert extracted.data.due_skonto is None
+    assert extracted.data.amount_skonto is None
+
+
+def test_cii_skonto_zero_discount_omits_silently() -> None:
+    import warnings as warnings_mod
+
+    with warnings_mod.catch_warnings():
+        warnings_mod.simplefilter("error")
+        extracted = parse_invoice_xml(CII_SKONTO_ZERO_XML)
+    assert extracted.data.due_skonto is None
+    assert extracted.data.amount_skonto is None
+
+
+def test_cii_skonto_credit_note_still_absolute() -> None:
+    extracted = parse_invoice_xml(CII_SKONTO_CREDIT_NOTE_XML)
+    assert extracted.is_credit_note is True
+    assert extracted.data.amount_skonto == Decimal("111.86")  # pre-sign
+
+
+def test_zugferd_1_skonto_variant() -> None:
+    extracted = parse_invoice_xml(ZUGFERD1_SKONTO_XML)
+    data = extracted.data
+    assert str(data.due_skonto) == "2026-08-15"  # BasisDate fallback
+    assert data.amount_skonto == Decimal("85.00")  # 89.50 - 4.50
+
+
+def test_ubl_skonto_percent_and_period() -> None:
+    extracted = parse_invoice_xml(UBL_SKONTO_XML)
+    data = extracted.data
+    assert str(data.due_skonto) == "2026-09-20"  # SettlementPeriod EndDate
+    assert data.amount_skonto == Decimal("232.05")  # 238.00 - 2.5%
+
+
+def test_ubl_skonto_printed_discount_amount() -> None:
+    xml = UBL_SKONTO_XML.replace(
+        b"<cbc:SettlementDiscountPercent>2.50</cbc:SettlementDiscountPercent>",
+        b"<cbc:SettlementDiscountAmount>5.95</cbc:SettlementDiscountAmount>",
+    )
+    extracted = parse_invoice_xml(xml)
+    assert str(extracted.data.due_skonto) == "2026-09-20"
+    assert extracted.data.amount_skonto == Decimal("232.05")  # 238.00 - 5.95
+
+
+def test_ubl_skonto_printed_discount_is_rounded_like_cii() -> None:
+    # A near-total printed discount must behave like CII (warn + omit),
+    # not round down to a degenerate amount_skonto of 0.00.
+    xml = UBL_SKONTO_XML.replace(
+        b"<cbc:SettlementDiscountPercent>2.50</cbc:SettlementDiscountPercent>",
+        b"<cbc:SettlementDiscountAmount>237.996</cbc:SettlementDiscountAmount>",
+    )
+    with pytest.warns(UserWarning, match="skonto"):
+        extracted = parse_invoice_xml(xml)
+    assert extracted.data.due_skonto is None
+    assert extracted.data.amount_skonto is None
+
+
+# -- hostile numeric input must degrade to warnings, never crash -------------
+
+
+def test_cii_skonto_overflow_percent_warns_and_omits() -> None:
+    xml = CII_SKONTO_PERCENT_XML.replace(
+        b"<ram:CalculationPercent>3.00</ram:CalculationPercent>",
+        b"<ram:CalculationPercent>1e999999999999999998</ram:CalculationPercent>",
+    )
+    with pytest.warns(UserWarning, match="skonto"):
+        extracted = parse_invoice_xml(xml)
+    assert extracted.data.due_skonto is None
+    assert extracted.data.amount_skonto is None
+
+
+def test_ubl_skonto_overflow_percent_warns_and_omits() -> None:
+    xml = UBL_SKONTO_XML.replace(
+        b"<cbc:SettlementDiscountPercent>2.50</cbc:SettlementDiscountPercent>",
+        b"<cbc:SettlementDiscountPercent>1e999999999999999998</cbc:SettlementDiscountPercent>",
+    )
+    with pytest.warns(UserWarning, match="skonto"):
+        extracted = parse_invoice_xml(xml)
+    assert extracted.data.due_skonto is None
+    assert extracted.data.amount_skonto is None
+
+
+def test_ubl_skonto_huge_duration_warns_and_omits() -> None:
+    xml = UBL_SKONTO_XML.replace(
+        b"""    <cac:SettlementPeriod>
+      <cbc:EndDate>2026-09-20</cbc:EndDate>
+    </cac:SettlementPeriod>""",
+        b"""    <cac:SettlementPeriod>
+      <cbc:StartDate>2026-09-05</cbc:StartDate>
+      <cbc:DurationMeasure unitCode="DAY">99999999999999999999999</cbc:DurationMeasure>
+    </cac:SettlementPeriod>""",
+    )
+    with pytest.warns(UserWarning, match="skonto"):
+        extracted = parse_invoice_xml(xml)
+    assert extracted.data.due_skonto is None
+    assert extracted.data.amount_skonto is None
 
 
 def test_missing_due_is_hard_error() -> None:

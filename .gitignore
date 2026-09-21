@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+.kilo
 dist/
 build/
 .mypy_cache/

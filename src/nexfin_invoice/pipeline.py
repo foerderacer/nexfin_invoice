@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 from .config import Config, load_config
@@ -84,12 +85,21 @@ def convert_many(
 
 
 def _signed(invoice: InvoiceData, *, is_credit_note: bool) -> InvoiceData:
+    update: dict[str, Decimal] = {}
     amount = abs(invoice.amount)
     if not is_credit_note:
         amount = -amount
-    if amount == invoice.amount:
+    if amount != invoice.amount:
+        update["amount"] = amount
+    if invoice.amount_skonto is not None:
+        skonto = abs(invoice.amount_skonto)
+        if not is_credit_note:
+            skonto = -skonto
+        if skonto != invoice.amount_skonto:
+            update["amount_skonto"] = skonto
+    if not update:
         return invoice
-    return invoice.model_copy(update={"amount": amount})
+    return invoice.model_copy(update=update)
 
 
 def _convert_with_ai(path: Path, config: Config, *, xml_reason: str | None) -> ConversionResult:

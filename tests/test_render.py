@@ -64,6 +64,58 @@ def test_golden_matches_documented_shape() -> None:
     assert render(sample_invoice()) == GOLDEN
 
 
+SKONTO_GOLDEN = """---
+id: RE-2026-0912
+vendor: Muller GmbH
+issued: 2026-09-01
+due_skonto: 2026-09-10
+due: 2026-09-15
+amount_skonto: -110.00
+amount: -119.00
+currency: EUR
+status: open
+booked: ""
+paid_date: ""
+---
+
+# RE-2026-0912 — Muller GmbH
+"""
+
+
+def test_skonto_fields_rendered_in_document_order() -> None:
+    invoice = sample_invoice(
+        category=None,
+        account=None,
+        iban=None,
+        account_holder=None,
+        reference=None,
+        line_items=[],
+        due_skonto="2026-09-10",
+        amount_skonto="-110.00",
+    )
+    text = render(invoice)
+    assert text == SKONTO_GOLDEN
+    assert "due_skonto: 2026-09-10" in text
+    assert "amount_skonto: -110.00" in text
+
+
+def test_skonto_amount_rendered_raw_not_quoted() -> None:
+    text = render(sample_invoice(due_skonto="2026-09-10", amount_skonto="-110.00"))
+    assert "amount_skonto: -110.00" in text
+    assert '"-110.00"' not in text
+
+
+def test_skonto_zero_renders_raw() -> None:
+    text = render(sample_invoice(due_skonto="2026-09-10", amount_skonto=0))
+    assert "amount_skonto: 0.00" in text
+    assert 'amount_skonto: "0.00"' not in text
+
+
+def test_skonto_omitted_when_absent() -> None:
+    text = render(sample_invoice())
+    assert "skonto" not in text
+
+
 def test_amount_always_two_decimals() -> None:
     text = render(sample_invoice(amount=Decimal("2500")))
     assert "amount: 2500.00" in text

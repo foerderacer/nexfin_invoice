@@ -15,7 +15,9 @@ the watched inbox folder of the ledger owner (default `Nexfin/Rechnungen/open/`,
 id: RE-2026-0912        # unique invoice number (required)
 vendor: Muller GmbH     # (required)
 issued: 2026-09-01      # date YYYY-MM-DD (required)
+due_skonto: 2026-09-07  # date YYYY-MM-DD (optional (only if given in the invoice))
 due: 2026-09-15         # date YYYY-MM-DD (required)
+amount_skonto: -110.00  # signed, 2 decimals, no thousands separators (optional (only if given in the invoice))
 amount: -119.00         # signed, 2 decimals, no thousands separators (required)
 currency: EUR           # ISO code, must match the booking account (required)
 category: office        # optional, finance_md category
@@ -38,22 +40,23 @@ paid_date: ""           # set on pay: YYYY-MM-DD
 
 ## Field reference
 
-| Field | Required | Rules |
-|---|---|---|
-| `id` | yes | Unique invoice number. Duplicate ids across files are flagged as "needs attention" and are not bookable. |
-| `vendor` | yes | Free text. Used in the finance_md transaction description (`<id> <vendor>`). |
-| `issued` | yes | Valid calendar date, `YYYY-MM-DD`. |
-| `due` | yes | Valid calendar date, `YYYY-MM-DD`. Drives overdue/due-soon highlighting. |
-| `amount` | yes | finance_md convention: income `+`, expense `-`, at most 2 decimals, no thousands separators (`-119.00`, `2500`). Unquoted YAML numbers are normalized to two decimals on rewrite. |
-| `currency` | yes | ISO code. Must equal the booking account's currency; mismatches block the pay flow. |
-| `category` | no | Falls back to the admin default, then `other`. |
-| `account` | no | Preselected in the pay dialog. |
-| `iban` | no | SEPA transfer target shown in the pay dialog. Spaces and hyphens are stripped, the value is normalized to uppercase. Checked with the ISO 7064 mod-97 checksum — an invalid IBAN shows a **warning** in the pay dialog but never blocks booking. |
-| `account_holder` | no | Recipient name shown in the pay dialog next to the IBAN. |
-| `reference` | no | Transfer reference (Verwendungszweck) offered in the pay dialog. When absent, the UI falls back to the invoice `id` and marks it as the default. |
-| `status` | no | `open` (default) or `paid`. Managed by nexfin. |
-| `booked` | no | Written by nexfin on pay as `<account>/<ref>`. |
-| `paid_date` | no | Written by nexfin on pay. |
+
+| Field            | Required | Rules                                                                                                                                                                                                                                            |
+| ------------------ | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`             | yes      | Unique invoice number. Duplicate ids across files are flagged as "needs attention" and are not bookable.                                                                                                                                         |
+| `vendor`         | yes      | Free text. Used in the finance_md transaction description (`<id> <vendor>`).                                                                                                                                                                     |
+| `issued`         | yes      | Valid calendar date,`YYYY-MM-DD`.                                                                                                                                                                                                                |
+| `due`            | yes      | Valid calendar date,`YYYY-MM-DD`. Drives overdue/due-soon highlighting.                                                                                                                                                                          |
+| `amount`         | yes      | finance_md convention: income`+`, expense `-`, at most 2 decimals, no thousands separators (`-119.00`, `2500`). Unquoted YAML numbers are normalized to two decimals on rewrite.                                                                 |
+| `currency`       | yes      | ISO code. Must equal the booking account's currency; mismatches block the pay flow.                                                                                                                                                              |
+| `category`       | no       | Falls back to the admin default, then`other`.                                                                                                                                                                                                    |
+| `account`        | no       | Preselected in the pay dialog.                                                                                                                                                                                                                   |
+| `iban`           | no       | SEPA transfer target shown in the pay dialog. Spaces and hyphens are stripped, the value is normalized to uppercase. Checked with the ISO 7064 mod-97 checksum — an invalid IBAN shows a**warning** in the pay dialog but never blocks booking. |
+| `account_holder` | no       | Recipient name shown in the pay dialog next to the IBAN.                                                                                                                                                                                         |
+| `reference`      | no       | Transfer reference (Verwendungszweck) offered in the pay dialog. When absent, the UI falls back to the invoice`id` and marks it as the default.                                                                                                  |
+| `status`         | no       | `open` (default) or `paid`. Managed by nexfin.                                                                                                                                                                                                   |
+| `booked`         | no       | Written by nexfin on pay as`<account>/<ref>`.                                                                                                                                                                                                    |
+| `paid_date`      | no       | Written by nexfin on pay.                                                                                                                                                                                                                        |
 
 Payment fields (`iban`, `account_holder`, `reference`) are **display-only**:
 nexfin never writes them, they do not affect pay/booking, and they are not

@@ -15,7 +15,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 __all__ = ["InvoiceData", "LineItem", "parse_decimal_number", "structured_output_schema"]
 
@@ -103,6 +103,8 @@ class InvoiceData(BaseModel):
     iban: str | None = None
     account_holder: str | None = None
     reference: str | None = None
+    due_skonto: date | None = None
+    amount_skonto: Decimal | None = None
     status: Literal["open", "paid"] = "open"
     booked: str = ""
     paid_date: str = ""
@@ -135,14 +137,15 @@ class InvoiceData(BaseModel):
     @field_validator("issued", "due", mode="before")
     @classmethod
     def _parse_date(cls, value: Any) -> Any:
-        if isinstance(value, date):
-            return value
-        if isinstance(value, str) and _DATE_RE.match(value):
-            try:
-                return date.fromisoformat(value)
-            except ValueError as exc:
-                raise ValueError(f"not a valid calendar date: {value!r}") from exc
-        raise ValueError(f"date must be an ISO YYYY-MM-DD string, got {value!r}")
+        return _parse_iso_date(value)
+
+    @field_validator("due_skonto", mode="before")
+    @classmethod
+    def _parse_skonto_date(cls, value: Any) -> Any:
+        # Optional: null/empty means "no skonto terms", never a parse error.
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return _parse_iso_date(value)
 
     # -- amount -----------------------------------------------------------
 
@@ -151,12 +154,22 @@ class InvoiceData(BaseModel):
     def _coerce_amount(cls, value: Any) -> Any:
         return parse_decimal_number(value)
 
-    @field_validator("amount")
+    @field_validator("amount_skonto", mode="before")
     @classmethod
-    def _limit_decimals(cls, value: Decimal) -> Decimal:
+    def _coerce_skonto_amount(cls, value: Any) -> Any:
+        # Optional: null/empty means "no skonto terms", never a parse error.
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return parse_decimal_number(value)
+
+    @field_validator("amount", "amount_skonto")
+    @classmethod
+    def _limit_decimals(cls, value: Decimal | None, info: Any) -> Decimal | None:
+        if value is None:
+            return None
         exponent = value.as_tuple().exponent
         if isinstance(exponent, int) and -exponent > 2:
-            raise ValueError(f"amount must have at most 2 decimal places, got {value}")
+            raise ValueError(f"{info.field_name} must have at most 2 decimal places, got {value}")
         return value
 
     # -- currency ---------------------------------------------------------
@@ -203,6 +216,57 @@ class InvoiceData(BaseModel):
                     stacklevel=2,
                 )
         return value
+
+    # -- skonto (cash discount) -------------------------------------------
+
+    @model_validator(mode="after")
+    def _check_skonto_pair(self) -> InvoiceData:
+        # Atomic pair: the writer never emits one field without the other.
+        # Hard error so the AI path self-heals via its validation-retry loop.
+        if (self.due_skonto is None) != (self.amount_skonto is None):
+            raise ValueError(
+                "due_skonto and amount_skonto must be provided together or both be null"
+            )
+        if self.due_skonto is None or self.amount_skonto is None:
+            return self
+        # Sanity checks below are warn-only, mirroring the IBAN precedent:
+        # a skonto problem must never block an otherwise bookable invoice.
+        if self.due_skonto > self.due:
+            warnings.warn(
+                f"due_skonto {self.due_skonto} is after the payment due date {self.due}",
+                UserWarning,
+                stacklevel=2,
+            )
+        if (
+            self.amount != 0
+            and self.amount_skonto != 0
+            and (self.amount < 0) != (self.amount_skonto < 0)
+        ):
+            warnings.warn(
+                f"amount_skonto {self.amount_skonto} has a different sign than amount "
+                f"{self.amount}",
+                UserWarning,
+                stacklevel=2,
+            )
+        if abs(self.amount_skonto) > abs(self.amount):
+            warnings.warn(
+                f"amount_skonto {self.amount_skonto} exceeds the total amount {self.amount}",
+                UserWarning,
+                stacklevel=2,
+            )
+        return self
+
+
+def _parse_iso_date(value: Any) -> date:
+    """Parse an ISO ``YYYY-MM-DD`` string (or date) into :class:`~datetime.date`."""
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and _DATE_RE.match(value):
+        try:
+            return date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"not a valid calendar date: {value!r}") from exc
+    raise ValueError(f"date must be an ISO YYYY-MM-DD string, got {value!r}")
 
 
 def _iban_mod97(iban: str) -> int:

@@ -22,7 +22,9 @@ _FIELD_ORDER = (
     "id",
     "vendor",
     "issued",
+    "due_skonto",
     "due",
+    "amount_skonto",
     "amount",
     "currency",
     "category",
@@ -36,7 +38,12 @@ _FIELD_ORDER = (
 )
 
 # Optional fields: omitted entirely when empty/None.
-_OPTIONAL_FIELDS = frozenset({"category", "account", "iban", "account_holder", "reference"})
+_OPTIONAL_FIELDS = frozenset(
+    {"category", "account", "iban", "account_holder", "reference", "due_skonto", "amount_skonto"}
+)
+
+# Amounts render as raw numbers (never quoted), unlike all other scalars.
+_RAW_NUMBER_FIELDS = frozenset({"amount", "amount_skonto"})
 
 # YAML leading indicators that force quoting, plus "looks like a number" and
 # "looks like a bool/null" values which YAML would otherwise misread.
@@ -71,6 +78,8 @@ def render(invoice: InvoiceData) -> str:
         "status": invoice.status,
         "booked": invoice.booked,
         "paid_date": invoice.paid_date,
+        "due_skonto": "" if invoice.due_skonto is None else _date_text(invoice.due_skonto),
+        "amount_skonto": "" if invoice.amount_skonto is None else f"{invoice.amount_skonto:.2f}",
     }
 
     lines = ["---"]
@@ -78,8 +87,8 @@ def render(invoice: InvoiceData) -> str:
         value = fields[key]
         if key in _OPTIONAL_FIELDS and not value:
             continue
-        if key == "amount":
-            lines.append(f"amount: {value}")
+        if key in _RAW_NUMBER_FIELDS:
+            lines.append(f"{key}: {value}")
         else:
             lines.append(f"{key}: {_scalar(value)}")
     lines.append("---")

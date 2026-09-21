@@ -37,6 +37,67 @@ def test_structured_output_request_and_success() -> None:
     assert "RE-2026-0777" in user_content[0]["text"]
 
 
+def test_schema_includes_skonto_fields_and_stays_strict() -> None:
+    from nexfin_invoice.model import structured_output_schema
+
+    schema = structured_output_schema()
+    inner = schema["schema"]
+    properties = inner["properties"]
+    assert "due_skonto" in properties
+    assert "amount_skonto" in properties
+    assert schema["strict"] is True
+    assert inner["additionalProperties"] is False
+    assert inner["required"] == list(properties)
+
+
+def test_prompt_mentions_skonto_rules() -> None:
+    from nexfin_invoice.ai.prompt import build_system_prompt
+
+    prompt = build_system_prompt()
+    assert "due_skonto" in prompt
+    assert "amount_skonto" in prompt
+    assert "together" in prompt
+
+
+def test_model_answer_with_skonto_validates() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=completion(
+                invoice_json(due_skonto="2026-09-10", amount_skonto=-99.75)
+            ),
+        )
+
+    client, log = make_mock_client(handler)
+    invoice = extract_invoice_data(client, text="x")
+    assert str(invoice.due_skonto) == "2026-09-10"
+    assert invoice.amount_skonto == Decimal("-99.75")
+
+    # The schema payload still demands every property, nulls included.
+    sent_schema = log.payloads[0]["response_format"]["json_schema"]["schema"]
+    assert "due_skonto" in sent_schema["properties"]
+
+
+def test_partial_skonto_pair_recovers_via_retry() -> None:
+    responses = iter(
+        [
+            invoice_json(due_skonto="2026-09-10"),  # partial pair → ValidationError
+            invoice_json(due_skonto="2026-09-10", amount_skonto=-99.75),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=completion(next(responses)))
+
+    client, log = make_mock_client(handler)
+    invoice = extract_invoice_data(client, text="x")
+    assert str(invoice.due_skonto) == "2026-09-10"
+    assert invoice.amount_skonto == Decimal("-99.75")
+    retry_messages = log.payloads[1]["messages"]
+    assert len(retry_messages) == 4  # system, user, assistant, user
+    assert "together" in retry_messages[3]["content"]
+
+
 def test_categories_and_accounts_injected() -> None:
     client, log = make_mock_client(ok)
     extract_invoice_data(client, text="x", categories=("office", "travel"), accounts=("Checking",))

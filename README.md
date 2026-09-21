@@ -105,6 +105,14 @@ dates, currency an ISO 4217 code, IBANs are normalized (spaces/hyphens
 stripped, uppercased) with a warn-only mod-97 checksum check — mirroring the
 nexfin pay dialog, which warns but never blocks.
 
+The optional Skonto fields are atomic: `due_skonto` and `amount_skonto`
+appear together only when the document states both a deadline and a
+discount (a stated percentage is computed with `ROUND_HALF_UP`).
+`amount_skonto` is the reduced total payable within the skonto window,
+signed exactly like `amount` — not the discount itself. Incomplete or
+nonsensical skonto terms are dropped with a warning; they never block
+conversion of an otherwise bookable invoice.
+
 ## Development
 
 ```console

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from decimal import Decimal
 
 import pytest
@@ -96,6 +97,95 @@ def test_empty_optional_strings_become_none() -> None:
     assert invoice.reference is None
 
 
+# -- skonto pair ----------------------------------------------------------
+
+
+def test_skonto_pair_parses() -> None:
+    invoice = InvoiceData(
+        **base_data(due_skonto="2026-09-10", amount_skonto="-110.00")
+    )
+    assert str(invoice.due_skonto) == "2026-09-10"
+    assert invoice.amount_skonto == Decimal("-110.00")
+
+
+def test_skonto_pair_defaults_absent() -> None:
+    invoice = InvoiceData(**base_data())
+    assert invoice.due_skonto is None
+    assert invoice.amount_skonto is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"due_skonto": "2026-09-10"},
+        {"amount_skonto": "-110.00"},
+        {"due_skonto": "2026-09-10", "amount_skonto": None},
+        {"due_skonto": None, "amount_skonto": "-110.00"},
+    ],
+)
+def test_partial_skonto_pair_is_hard_error(overrides: dict) -> None:
+    data = base_data()
+    data.update(overrides)
+    with pytest.raises(ValidationError, match="together"):
+        InvoiceData(**data)
+
+
+def test_skonto_zero_amount_counts_as_set() -> None:
+    invoice = InvoiceData(**base_data(due_skonto="2026-09-10", amount_skonto=0))
+    assert invoice.amount_skonto == Decimal("0.00")
+
+
+def test_skonto_empty_strings_mean_absent() -> None:
+    invoice = InvoiceData(**base_data(due_skonto="", amount_skonto=" "))
+    assert invoice.due_skonto is None
+    assert invoice.amount_skonto is None
+
+
+def test_skonto_bad_date_rejected() -> None:
+    with pytest.raises(ValidationError, match="ISO YYYY-MM-DD"):
+        InvoiceData(
+            **base_data(due_skonto="2026-09-7", amount_skonto="-110.00")
+        )
+
+
+def test_skonto_rejects_three_decimals() -> None:
+    with pytest.raises(ValidationError, match="amount_skonto"):
+        InvoiceData(
+            **base_data(due_skonto="2026-09-10", amount_skonto="-110.005")
+        )
+
+
+def test_skonto_after_due_warns_only() -> None:
+    with pytest.warns(UserWarning, match="after the payment due date"):
+        invoice = InvoiceData(
+            **base_data(due_skonto="2026-09-16", amount_skonto="-110.00")
+        )
+    assert invoice.due_skonto is not None  # kept, never blocks booking
+
+
+def test_skonto_sign_mismatch_warns_only() -> None:
+    with pytest.warns(UserWarning, match="different sign"):
+        InvoiceData(
+            **base_data(due_skonto="2026-09-10", amount_skonto="110.00")
+        )
+
+
+def test_skonto_oversize_warns_only() -> None:
+    with pytest.warns(UserWarning, match="exceeds the total amount"):
+        invoice = InvoiceData(
+            **base_data(due_skonto="2026-09-10", amount_skonto="-200.00")
+        )
+    assert invoice.amount_skonto == Decimal("-200.00")
+
+
+def test_skonto_equal_dates_and_matching_sign_no_warning() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        InvoiceData(
+            **base_data(due_skonto="2026-09-15", amount_skonto="-119.00")
+        )
+
+
 def test_line_items_coerce_numbers() -> None:
     invoice = InvoiceData(
         **base_data(
@@ -133,6 +223,8 @@ def test_structured_output_schema_is_strict() -> None:
     properties = inner["properties"]
     for managed in ("status", "booked", "paid_date"):
         assert managed not in properties
+    assert "due_skonto" in properties
+    assert "amount_skonto" in properties
     assert inner["required"] == list(properties)
     line_item = inner["$defs"]["LineItem"]
     assert line_item["additionalProperties"] is False

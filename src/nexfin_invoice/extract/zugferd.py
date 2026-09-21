@@ -15,15 +15,21 @@ Numbers in CII use decimal commas; dates arrive as format-102
 (``YYYYMMDD``) strings. Both are normalized here. Amounts come back as
 absolute values plus an ``is_credit_note`` flag; the pipeline applies the
 sign.
+
+Skonto (cash discount) terms are extracted best-effort when complete
+(deadline + discount amount); incomplete or nonsensical terms are omitted
+with a ``UserWarning`` — skonto never makes an invoice unbookable.
 """
 
 from __future__ import annotations
 
 import re
+import warnings
 import xml.etree.ElementTree as ET
+from contextlib import suppress
 from dataclasses import dataclass
-from datetime import date
-from decimal import Decimal
+from datetime import date, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +61,18 @@ _CII_SUMMATION = (
     "SpecifiedTradeSettlementHeaderMonetarySummation",
     "SpecifiedTradeSettlementMonetarySummation",
 )
+
+# Cash-discount (skonto) terms element inside SpecifiedTradePaymentTerms.
+# CII D16A/D16B (ZUGFeRD 2.x / Factur-X / XRechnung CII) use
+# ApplicableTradePaymentDiscountTerms; the other spellings are tolerated
+# variants so an unknown-but-close name degrades to "no skonto found".
+_CII_DISCOUNT_TERMS = (
+    "ApplicableTradePaymentDiscountTerms",
+    "ApplicableTradePaymentDiscountTerm",
+    "SpecifiedTradePaymentDiscountTerms",
+)
+# unitCode values meaning "days" for BasisPeriodMeasure / DurationMeasure.
+_SKONTO_DAY_UNITS = frozenset({"DAY", "DAYS", "D", "TAG", "TAGE"})
 
 
 @dataclass(frozen=True)
@@ -238,6 +256,7 @@ def _parse_cii(root: ET.Element) -> ExtractedInvoice:
         raise MissingFieldError(_missing_message(missing))
 
     type_code = _child_text(doc, "TypeCode") or ""
+    due_skonto, amount_skonto = _skonto_cii(settlement, amount)
     data = InvoiceData(
         id=invoice_id,
         vendor=vendor,
@@ -248,6 +267,8 @@ def _parse_cii(root: ET.Element) -> ExtractedInvoice:
         iban=_iban_cii(settlement),
         account_holder=_account_holder_cii(settlement, vendor),
         reference=_child_text(settlement, "PaymentReference"),
+        due_skonto=due_skonto,
+        amount_skonto=amount_skonto,
     )
     return ExtractedInvoice(data=data, is_credit_note=type_code == "381")
 
@@ -281,6 +302,123 @@ def _amount_cii(settlement: ET.Element | None) -> Decimal | None:
 def _iban_cii(settlement: ET.Element) -> str | None:
     account = _first_descendant(settlement, "PayeePartyCreditorFinancialAccount")
     return _child_text(account, "IBANID")
+
+
+def _skonto_cii(
+    settlement: ET.Element | None, payable: Decimal
+) -> tuple[date | None, Decimal | None]:
+    """Extract skonto (cash discount) terms from CII payment terms.
+
+    Returns absolute ``(due_skonto, amount_skonto)`` where ``amount_skonto``
+    is the reduced total payable (``payable - discount``); ``(None, None)``
+    when no complete skonto terms are derivable. Skonto is optional:
+    incomplete or nonsensical terms are dropped with a warning, never an
+    error. Multiple discount tiers: the first discount-terms block in
+    document order wins.
+    """
+    if settlement is None:
+        return None, None
+    for terms in _children(settlement, "SpecifiedTradePaymentTerms"):
+        discount = _first_child(terms, *_CII_DISCOUNT_TERMS)
+        if discount is None:
+            continue
+        due = _skonto_deadline_cii(discount)
+        discount_amount = _skonto_discount_cii(discount, payable)
+        return _skonto_accept(due, discount_amount, payable, warn_if_incomplete=True)
+    return None, None
+
+
+def _skonto_deadline_cii(discount: ET.Element) -> date | None:
+    """Absolute skonto deadline; period-only terms never become a date."""
+    raw = _child_text(_first_child(discount, "BasisDateTime"), "DateTimeString")
+    if not raw:
+        basis_date = _first_child(discount, "BasisDate")
+        if basis_date is not None and basis_date.text and basis_date.text.strip():
+            raw = basis_date.text.strip()
+        else:
+            raw = _child_text(basis_date, "DateString")
+    if not raw:
+        return None
+    try:
+        return _to_date(raw)
+    except UnsupportedFormatError:
+        return None
+
+
+def _skonto_discount_cii(discount: ET.Element, payable: Decimal) -> Decimal | None:
+    """Discount amount: printed ``ActualDiscountAmount``, else percent * basis."""
+    raw = _child_text(discount, "ActualDiscountAmount")
+    if raw:
+        try:
+            return _round_money(abs(parse_decimal_number(raw)))
+        except ArithmeticError:
+            return None
+    percent_raw = _child_text(discount, "CalculationPercent")
+    if not percent_raw:
+        return None
+    try:
+        percent = parse_decimal_number(percent_raw)
+    except ArithmeticError:
+        return None
+    basis_raw = _child_text(discount, "BasisAmount")
+    basis = payable
+    if basis_raw:
+        # A non-numeric BasisAmount falls back to the payable amount.
+        with suppress(ArithmeticError):
+            basis = abs(parse_decimal_number(basis_raw))
+    try:
+        return _round_money(basis * percent / Decimal(100))
+    except ArithmeticError:
+        return None  # e.g. decimal overflow on absurd input
+
+
+# -- shared skonto acceptance rules -------------------------------------------
+
+
+def _round_money(value: Decimal) -> Decimal:
+    """Quantize a money amount to 2 decimals, half up."""
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _skonto_accept(
+    due: date | None,
+    discount_amount: Decimal | None,
+    payable: Decimal,
+    *,
+    warn_if_incomplete: bool,
+) -> tuple[date | None, Decimal | None]:
+    """Apply the shared skonto acceptance rules to parsed discount terms.
+
+    Returns ``(due_skonto, amount_skonto)`` with the reduced total payable,
+    or ``(None, None)`` when the terms state no skonto price or cannot be
+    completed. ``warn_if_incomplete`` gates the warning so, e.g., free-text
+    UBL terms degrade silently.
+    """
+    if discount_amount == 0:
+        return None, None  # a 0% discount states no skonto price
+    if due is None or discount_amount is None or not 0 < discount_amount < payable:
+        if warn_if_incomplete:
+            _warn_skonto("incomplete or nonsensical discount terms")
+        return None, None
+    try:
+        reduced = _round_money(payable - discount_amount)
+    except ArithmeticError:
+        if warn_if_incomplete:
+            _warn_skonto("incomplete or nonsensical discount terms")
+        return None, None
+    if reduced <= 0:
+        if warn_if_incomplete:
+            _warn_skonto("discount equals the payable amount")
+        return None, None
+    return due, reduced
+
+
+def _warn_skonto(reason: str) -> None:
+    warnings.warn(
+        f"invoice XML skonto terms ignored: {reason}",
+        UserWarning,
+        stacklevel=2,
+    )
 
 
 def _account_holder_cii(settlement: ET.Element, fallback: str) -> str | None:
@@ -324,6 +462,7 @@ def _parse_ubl(root: ET.Element, *, credit_note: bool) -> ExtractedInvoice:
     assert invoice_id is not None and issued_raw is not None and due_raw is not None
     assert currency is not None and amount is not None and vendor is not None
     type_code = _child_text(root, "InvoiceTypeCode") or ""
+    due_skonto, amount_skonto = _skonto_ubl(root, amount)
     data = InvoiceData(
         id=invoice_id,
         vendor=vendor,
@@ -334,6 +473,8 @@ def _parse_ubl(root: ET.Element, *, credit_note: bool) -> ExtractedInvoice:
         iban=_iban_ubl(root),
         account_holder=_account_holder_ubl(root, vendor),
         reference=_reference_ubl(root),
+        due_skonto=due_skonto,
+        amount_skonto=amount_skonto,
     )
     is_credit = credit_note or type_code == "381"
     return ExtractedInvoice(data=data, is_credit_note=is_credit)
@@ -377,6 +518,77 @@ def _vendor_ubl(root: ET.Element) -> str | None:
 def _iban_ubl(root: ET.Element) -> str | None:
     account = _first_descendant(root, "PayeeFinancialAccount")
     return _child_text(account, "ID")
+
+
+def _skonto_ubl(
+    root: ET.Element, payable: Decimal
+) -> tuple[date | None, Decimal | None]:
+    """Best-effort skonto extraction from UBL ``cac:PaymentTerms``.
+
+    Uses ``cbc:SettlementDiscountAmount``, else ``cbc:SettlementDiscountPercent``
+    * payable; deadline from ``cac:SettlementPeriod`` (``EndDate`` preferred,
+    else ``StartDate`` + ``DurationMeasure`` in days). XRechnung often states
+    skonto only as free text — free-text mining is left to the AI paths, so
+    plain ``Note`` terms degrade to "no skonto" silently.
+
+    Returns absolute ``(due_skonto, amount_skonto)`` where ``amount_skonto``
+    is the reduced total payable (``payable - discount``).
+    """
+    terms = _first_descendant(root, "PaymentTerms")
+    if terms is None:
+        return None, None
+    discount_raw = _child_text(terms, "SettlementDiscountAmount")
+    percent_raw = _child_text(terms, "SettlementDiscountPercent")
+    had_discount_data = bool(discount_raw or percent_raw)
+    discount_amount: Decimal | None = None
+    if discount_raw:
+        # An unparseable printed amount falls through to the percent rule.
+        with suppress(ArithmeticError):
+            discount_amount = _round_money(abs(parse_decimal_number(discount_raw)))
+    if discount_amount is None and percent_raw:
+        try:
+            percent = parse_decimal_number(percent_raw)
+        except ArithmeticError:
+            percent = None
+        if percent is not None:
+            try:
+                discount_amount = _round_money(payable * percent / Decimal(100))
+            except ArithmeticError:
+                discount_amount = None  # e.g. decimal overflow on absurd input
+    return _skonto_accept(
+        _skonto_deadline_ubl(terms),
+        discount_amount,
+        payable,
+        warn_if_incomplete=had_discount_data,
+    )
+
+
+def _skonto_deadline_ubl(terms: ET.Element) -> date | None:
+    """Skonto deadline from the settlement period, if an absolute date results."""
+    period = _first_child(terms, "SettlementPeriod")
+    if period is None:
+        return None
+    end_raw = _child_text(period, "EndDate")
+    if end_raw:
+        try:
+            return _to_date(end_raw)
+        except UnsupportedFormatError:
+            return None
+    start_raw = _child_text(period, "StartDate")
+    measure = _first_child(period, "DurationMeasure")
+    if not start_raw or measure is None or measure.text is None:
+        return None
+    unit = (measure.get("unitCode") or "").strip().upper()
+    if unit not in _SKONTO_DAY_UNITS:
+        return None
+    try:
+        days = int(measure.text.strip())
+    except ValueError:
+        return None
+    try:
+        return _to_date(start_raw) + timedelta(days=days)
+    except (UnsupportedFormatError, OverflowError):
+        return None
 
 
 def _account_holder_ubl(root: ET.Element, fallback: str) -> str | None:

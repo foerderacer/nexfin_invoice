@@ -11,6 +11,8 @@ from conftest import (
     CII_CREDIT_NOTE_XML,
     CII_INVOICE_XML,
     CII_MISSING_DUE_XML,
+    CII_SKONTO_CREDIT_NOTE_XML,
+    CII_SKONTO_XML,
     INVOICE_TEXT_LINES,
     completion,
     invoice_json,
@@ -41,6 +43,26 @@ def test_zugferd_path_keeps_credit_note_positive(tmp_path) -> None:
     pdf = make_zugferd_pdf(tmp_path / "credit.pdf", CII_CREDIT_NOTE_XML)
     result = convert(pdf, Config())
     assert result.invoice.amount == Decimal("59.00")
+
+
+def test_zugferd_path_signs_skonto_negative(tmp_path) -> None:
+    pdf = make_zugferd_pdf(tmp_path / "skonto.pdf", CII_SKONTO_XML)
+    result = convert(pdf, Config())
+    assert result.invoice.amount == Decimal("-119.00")
+    assert result.invoice.amount_skonto == Decimal("-111.86")
+    assert result.invoice.due_skonto is not None
+    assert str(result.invoice.due_skonto) == "2026-09-10"
+    assert "due_skonto: 2026-09-10" in result.markdown
+    assert "amount_skonto: -111.86" in result.markdown
+    assert "due_skonto" in result.markdown.split("due:", 1)[0]
+
+
+def test_zugferd_path_signs_skonto_positive_for_credit_note(tmp_path) -> None:
+    pdf = make_zugferd_pdf(tmp_path / "credit-skonto.pdf", CII_SKONTO_CREDIT_NOTE_XML)
+    result = convert(pdf, Config())
+    assert result.invoice.amount == Decimal("119.00")
+    assert result.invoice.amount_skonto == Decimal("111.86")
+    assert "amount_skonto: 111.86" in result.markdown
 
 
 def test_missing_due_is_hard_error_even_with_api_key(tmp_path) -> None:

@@ -30,6 +30,14 @@ Field rules:
   places and no thousands separators. Sign convention: a purchase invoice (money owed by
   us) is negative (e.g. -119.00); a credit note or refund (money owed to us) is positive
   (e.g. 119.00).
+- due_skonto: the last date (YYYY-MM-DD) on which the cash discount (Skonto) price applies;
+  null when the document states no skonto terms.
+- amount_skonto: the total gross payable within the skonto window (full amount minus the
+  discount), with exactly 2 decimal places and no thousands separators, signed exactly like
+  `amount` (purchase invoice negative, credit note positive). A stated discount percentage
+  and deadline count as skonto terms: compute the reduced total (e.g. 3% within 14 days on
+  119.00 → due_skonto = deadline date, amount_skonto = -115.43). Emit `due_skonto` and
+  `amount_skonto` together, or leave both null — never only one of them.
 - currency: ISO 4217 code (e.g. EUR, USD, CHF).
 - iban: the payment IBAN, uppercase, without spaces or hyphens; null when absent.
 - account_holder: the holder of the payment account (the payee), null when absent.

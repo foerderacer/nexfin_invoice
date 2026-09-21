@@ -91,6 +91,82 @@ CII_INVOICE_CURRENCY_VARIANT_XML = CII_INVOICE_XML.replace(
     b"<ram:InvoiceCurrencyCode>EUR</ram:InvoiceCurrencyCode>",
 )
 
+# Skonto terms with a printed discount amount and an absolute deadline
+# (CII D16A element name ApplicableTradePaymentDiscountTerms).
+CII_SKONTO_XML = CII_INVOICE_XML.replace(
+    b"""      <ram:SpecifiedTradePaymentTerms>
+        <ram:DueDateDateTime>
+          <udt:DateTimeString format="102">20260915</udt:DateTimeString>
+        </ram:DueDateDateTime>
+      </ram:SpecifiedTradePaymentTerms>""",
+    b"""      <ram:SpecifiedTradePaymentTerms>
+        <ram:DueDateDateTime>
+          <udt:DateTimeString format="102">20260915</udt:DateTimeString>
+        </ram:DueDateDateTime>
+        <ram:ApplicableTradePaymentDiscountTerms>
+          <ram:BasisDateTime>
+            <udt:DateTimeString format="102">20260910</udt:DateTimeString>
+          </ram:BasisDateTime>
+          <ram:ActualDiscountAmount>7,14</ram:ActualDiscountAmount>
+        </ram:ApplicableTradePaymentDiscountTerms>
+      </ram:SpecifiedTradePaymentTerms>""",
+)
+
+# Skonto stated as percentage only (3% off the payable amount).
+CII_SKONTO_PERCENT_XML = CII_INVOICE_XML.replace(
+    b"""      <ram:SpecifiedTradePaymentTerms>
+        <ram:DueDateDateTime>
+          <udt:DateTimeString format="102">20260915</udt:DateTimeString>
+        </ram:DueDateDateTime>
+      </ram:SpecifiedTradePaymentTerms>""",
+    b"""      <ram:SpecifiedTradePaymentTerms>
+        <ram:DueDateDateTime>
+          <udt:DateTimeString format="102">20260915</udt:DateTimeString>
+        </ram:DueDateDateTime>
+        <ram:ApplicableTradePaymentDiscountTerms>
+          <ram:BasisDateTime>
+            <udt:DateTimeString format="102">20260910</udt:DateTimeString>
+          </ram:BasisDateTime>
+          <ram:BasisAmount>119,00</ram:BasisAmount>
+          <ram:CalculationPercent>3.00</ram:CalculationPercent>
+        </ram:ApplicableTradePaymentDiscountTerms>
+      </ram:SpecifiedTradePaymentTerms>""",
+)
+
+# Discount with no absolute deadline ("within 14 days" only) — omitted + warning.
+CII_SKONTO_PERIOD_ONLY_XML = CII_INVOICE_XML.replace(
+    b"""      <ram:SpecifiedTradePaymentTerms>
+        <ram:DueDateDateTime>
+          <udt:DateTimeString format="102">20260915</udt:DateTimeString>
+        </ram:DueDateDateTime>
+      </ram:SpecifiedTradePaymentTerms>""",
+    b"""      <ram:SpecifiedTradePaymentTerms>
+        <ram:DueDateDateTime>
+          <udt:DateTimeString format="102">20260915</udt:DateTimeString>
+        </ram:DueDateDateTime>
+        <ram:ApplicableTradePaymentDiscountTerms>
+          <ram:BasisPeriodMeasure unitCode="DAY">14</ram:BasisPeriodMeasure>
+          <ram:ActualDiscountAmount>7,14</ram:ActualDiscountAmount>
+        </ram:ApplicableTradePaymentDiscountTerms>
+      </ram:SpecifiedTradePaymentTerms>""",
+)
+
+# Nonsense: discount larger than the payable amount — omitted + warning.
+CII_SKONTO_OVERSIZE_XML = CII_SKONTO_XML.replace(
+    b"<ram:ActualDiscountAmount>7,14</ram:ActualDiscountAmount>",
+    b"<ram:ActualDiscountAmount>200,00</ram:ActualDiscountAmount>",
+)
+
+# Zero discount states no skonto price — omitted silently.
+CII_SKONTO_ZERO_XML = CII_SKONTO_XML.replace(
+    b"<ram:ActualDiscountAmount>7,14</ram:ActualDiscountAmount>",
+    b"<ram:ActualDiscountAmount>0,00</ram:ActualDiscountAmount>",
+)
+
+CII_SKONTO_CREDIT_NOTE_XML = CII_SKONTO_XML.replace(
+    b"<ram:TypeCode>380</ram:TypeCode>", b"<ram:TypeCode>381</ram:TypeCode>"
+)
+
 ZUGFERD1_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <CrossIndustryDocument xmlns="urn:ferd:CrossIndustryDocument:invoice:1p0">
   <SpecifiedExchangedDocumentContext>
@@ -123,6 +199,24 @@ ZUGFERD1_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
   </SpecifiedSupplyChainTradeTransaction>
 </CrossIndustryDocument>
 """
+
+# ZUGFeRD 1.0 skonto variant with a plain BasisDate fallback element.
+ZUGFERD1_SKONTO_XML = ZUGFERD1_XML.replace(
+    b"""      <SpecifiedTradePaymentTerms>
+        <DueDateDateTime>
+          <DateTimeString format="102">20260830</DateTimeString>
+        </DueDateDateTime>
+      </SpecifiedTradePaymentTerms>""",
+    b"""      <SpecifiedTradePaymentTerms>
+        <DueDateDateTime>
+          <DateTimeString format="102">20260830</DateTimeString>
+        </DueDateDateTime>
+        <SpecifiedTradePaymentDiscountTerms>
+          <BasisDate>20260815</BasisDate>
+          <ActualDiscountAmount>4,50</ActualDiscountAmount>
+        </SpecifiedTradePaymentDiscountTerms>
+      </SpecifiedTradePaymentTerms>""",
+)
 
 UBL_INVOICE_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <ubl:Invoice
@@ -179,6 +273,18 @@ UBL_MISSING_DUE_XML = UBL_INVOICE_XML.replace(
 
 UBL_FALLBACK_AMOUNT_XML = UBL_INVOICE_XML.replace(
     b"<cbc:PayableAmount currencyID=\"EUR\">238.00</cbc:PayableAmount>", b""
+)
+
+# UBL skonto terms: percent + settlement period with an absolute end date.
+UBL_SKONTO_XML = UBL_INVOICE_XML.replace(
+    b"""  <cac:LegalMonetaryTotal>""",
+    b"""  <cac:PaymentTerms>
+    <cbc:SettlementDiscountPercent>2.50</cbc:SettlementDiscountPercent>
+    <cac:SettlementPeriod>
+      <cbc:EndDate>2026-09-20</cbc:EndDate>
+    </cac:SettlementPeriod>
+  </cac:PaymentTerms>
+  <cac:LegalMonetaryTotal>""",
 )
 
 # --------------------------------------------------------------------------
@@ -288,6 +394,8 @@ def invoice_json(**overrides: Any) -> str:
         "iban": "DE89370400440532013000",
         "account_holder": "Muller GmbH",
         "reference": "RE-2026-0777",
+        "due_skonto": None,
+        "amount_skonto": None,
         "line_items": [{"description": "Office chair", "quantity": 1, "amount": 89.0}],
     }
     data.update(overrides)

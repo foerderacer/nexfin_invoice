@@ -37,6 +37,14 @@ nexfin (the ledger app) watches an inbox folder and books these files.
 - **Credit note** — a refund document. Amount sign convention (finance_md):
   expense negative, income positive; a credit note's amount is stored
   positive.
+- **Skonto** — cash discount (German) offered for payment before a deadline.
+  Emitted as the atomic pair `due_skonto` (last day the discount applies) and
+  `amount_skonto` (the reduced total payable within that window, signed like
+  `amount` — not the discount itself). Extracted deterministically from CII
+  payment-discount terms (`ApplicableTradePaymentDiscountTerms`) and UBL
+  `PaymentTerms`, or by the AI paths. Both fields or neither; omitted with a
+  `UserWarning` when the document's terms are incomplete or nonsensical —
+  skonto never blocks booking.
 - **Extraction path** — one of `zugferd` (deterministic XML), `ai-text`
   (PDF text + AI), `ai-vision` (rendered page images + AI). Dispatch order
   is fixed; vision only when no usable text layer.
