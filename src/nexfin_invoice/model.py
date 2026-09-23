@@ -17,7 +17,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-__all__ = ["InvoiceData", "LineItem", "parse_decimal_number", "structured_output_schema"]
+__all__ = [
+    "InvoiceData",
+    "LineItem",
+    "iban_problem",
+    "parse_decimal_number",
+    "structured_output_schema",
+]
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
@@ -27,6 +33,10 @@ _OPTIONAL_TEXT_FIELDS = ("category", "account", "account_holder", "reference")
 
 # Managed by nexfin itself; never part of the AI-facing schema.
 _MANAGED_FIELDS = ("status", "booked", "paid_date")
+
+# Converter provenance: written once by nexfin-invoice, never part of the
+# AI-facing schema (the AI cannot know how the PDF was parsed).
+_CONVERTER_FIELDS = ("parsed_by",)
 
 
 def parse_decimal_number(raw: Any) -> Decimal:
@@ -108,6 +118,7 @@ class InvoiceData(BaseModel):
     status: Literal["open", "paid"] = "open"
     booked: str = ""
     paid_date: str = ""
+    parsed_by: Literal["zugferd", "ai-text", "ai-vision"] | None = None
     line_items: list[LineItem] = []
 
     # -- required string fields -------------------------------------------
@@ -205,16 +216,9 @@ class InvoiceData(BaseModel):
         # Invalid checksums show a warning in the nexfin pay dialog but never
         # block booking, so we mirror that: warn here, never fail.
         if value is not None:
-            if not _IBAN_RE.match(value):
-                warnings.warn(
-                    f"iban {value!r} does not look like a valid IBAN", UserWarning, stacklevel=2
-                )
-            elif _iban_mod97(value) != 1:
-                warnings.warn(
-                    f"iban {value!r} fails the ISO 7064 mod-97 checksum",
-                    UserWarning,
-                    stacklevel=2,
-                )
+            problem = iban_problem(value)
+            if problem is not None:
+                warnings.warn(problem, UserWarning, stacklevel=2)
         return value
 
     # -- skonto (cash discount) -------------------------------------------
@@ -275,16 +279,31 @@ def _iban_mod97(iban: str) -> int:
     return int(digits) % 97
 
 
+def iban_problem(value: str) -> str | None:
+    """Return the IBAN problem message for ``value``, or ``None`` when valid.
+
+    Format regex plus the ISO 7064 mod-97 checksum, exactly the checks
+    :class:`InvoiceData` warns about. The AI path uses this to decide
+    whether the extracted IBAN needs a corrective redo.
+    """
+    if not _IBAN_RE.match(value):
+        return f"iban {value!r} does not look like a valid IBAN"
+    if _iban_mod97(value) != 1:
+        return f"iban {value!r} fails the ISO 7064 mod-97 checksum"
+    return None
+
+
 def structured_output_schema() -> dict[str, Any]:
     """Build an OpenAI/OpenRouter ``json_schema`` payload for structured output.
 
-    Derived from :class:`InvoiceData` with the nexfin-managed fields removed,
-    ``additionalProperties: false`` everywhere and every remaining property
-    marked required, as required by strict structured outputs.
+    Derived from :class:`InvoiceData` with the nexfin-managed and converter
+    fields removed, ``additionalProperties: false`` everywhere and every
+    remaining property marked required, as required by strict structured
+    outputs.
     """
     schema: dict[str, Any] = InvoiceData.model_json_schema()
     schema.pop("title", None)
-    for field_name in _MANAGED_FIELDS:
+    for field_name in (*_MANAGED_FIELDS, *_CONVERTER_FIELDS):
         schema.get("properties", {}).pop(field_name, None)
     for node in [schema, *schema.get("$defs", {}).values()]:
         if node.get("type") == "object":

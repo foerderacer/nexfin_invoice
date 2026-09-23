@@ -28,6 +28,7 @@ reference: RE-2026-0912         # optional, transfer reference (Verwendungszweck
 status: open            # managed by nexfin: open | paid
 booked: ""              # set on pay: "<account>/<tx-ref>"
 paid_date: ""           # set on pay: YYYY-MM-DD
+parsed_by: zugferd       # how the PDF was parsed: zugferd | ai-text | ai-vision (written by nexfin-invoice, display-only)
 ---
 
 # RE-2026-0912 — Muller GmbH
@@ -57,12 +58,15 @@ paid_date: ""           # set on pay: YYYY-MM-DD
 | `status`         | no       | `open` (default) or `paid`. Managed by nexfin.                                                                                                                                                                                                   |
 | `booked`         | no       | Written by nexfin on pay as`<account>/<ref>`.                                                                                                                                                                                                    |
 | `paid_date`      | no       | Written by nexfin on pay.                                                                                                                                                                                                                        |
+| `parsed_by`      | no       | One of `zugferd`, `ai-text`, `ai-vision`. Written once by `nexfin-invoice` at conversion time. Display-only: nexfin never writes it, it never affects booking, and it is not persisted in `nx_invoices`. Absent on files created before this field existed. |
 
 Payment fields (`iban`, `account_holder`, `reference`) are **display-only**:
 nexfin never writes them, they do not affect pay/booking, and they are not
 persisted in `nx_invoices`. They are read from the live file when the pay
 dialog opens, so manual edits show up immediately. Unknown/extra front matter
 keys are preserved when nexfin stamps `status`/`booked`/`paid_date` on pay.
+`parsed_by` is converter provenance in the same class — nexfin never writes it
+and it survives the pay/undo front-matter rewrite untouched.
 
 ## Validation behavior
 

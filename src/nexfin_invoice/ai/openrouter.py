@@ -8,7 +8,11 @@ Extraction contract:
   request and pull the JSON object out of the response text;
 * on validation failure, retry once with the validator errors appended to
   the conversation; then raise :class:`AiError` with the model output
-  attached.
+  attached;
+* if the extracted IBAN is present but invalid (format / ISO 7064 mod-97),
+  redo the extraction once with corrective feedback and accept the
+  corrected output; an unusable or failed redo keeps the invoice
+  warn-only, mirroring the nexfin pay dialog.
 
 The API key is never logged and never appears in error messages.
 """
@@ -16,12 +20,13 @@ The API key is never logged and never appears in error messages.
 from __future__ import annotations
 
 import json
+import warnings
 from typing import Any
 
 import httpx
 
 from ..errors import AiError
-from ..model import InvoiceData, structured_output_schema
+from ..model import InvoiceData, iban_problem, structured_output_schema
 from .prompt import build_messages
 
 __all__ = [
@@ -41,6 +46,13 @@ _MAX_ECHO_OUTPUT = 2000
 _RETRY_INSTRUCTION = (
     "The previous JSON output was rejected:\n{errors}\n"
     "Return the corrected JSON object only. Same schema, no prose."
+)
+
+_IBAN_RETRY_INSTRUCTION = (
+    "The extracted IBAN {iban} is invalid because {problem}.\n"
+    "Re-read the payment IBAN from the document carefully (OCR confusions like "
+    "0/O and 1/I/l are common), set `iban` to null when the document has no IBAN, "
+    "and return the full corrected JSON object only. Same schema, no prose."
 )
 
 
@@ -112,49 +124,107 @@ def extract_invoice_data(
     categories: tuple[str, ...] | list[str] = (),
     accounts: tuple[str, ...] | list[str] = (),
 ) -> InvoiceData:
-    """Extract invoice data via the AI, with the structured-output fallback
-    and one validation-failure retry."""
+    """Extract invoice data via the AI, with the structured-output fallback,
+    one validation-failure retry and one corrective IBAN redo.
+
+    Warnings raised while constructing discarded attempts are dropped and
+    the winning invoice's warnings are re-emitted exactly once, so a
+    superseded attempt never produces spurious diagnostics.
+    """
     messages = build_messages(text=text, images=images, categories=categories, accounts=accounts)
     try:
         content = client.chat(messages, json_schema=structured_output_schema())
     except ResponseFormatUnsupported:
         content = client.chat(messages)
-    return _validate_with_retry(client, messages, content)
+    invoice, winning_content, caught = _validate_with_retry(client, messages, content)
+    invoice, caught = _retry_bad_iban(client, messages, winning_content, invoice, caught)
+    for entry in caught:
+        warnings.warn_explicit(entry.message, entry.category, entry.filename, entry.lineno)
+    return invoice
 
 
 def _validate_with_retry(
     client: OpenRouterClient,
     messages: list[dict[str, Any]],
     content: str,
-) -> InvoiceData:
-    invoice, errors = _try_validate(content)
+) -> tuple[InvoiceData, str, list[warnings.WarningMessage]]:
+    """Return the validated invoice, the model content it was built from,
+    and the warnings recorded while constructing it."""
+    invoice, errors, caught = _try_validate(content)
     if invoice is not None:
-        return invoice
+        return invoice, content, caught
     retry_messages = [
         *messages,
         {"role": "assistant", "content": content},
         {"role": "user", "content": _RETRY_INSTRUCTION.format(errors=errors)},
     ]
     retry_content = client.chat(retry_messages)
-    invoice, retry_errors = _try_validate(retry_content)
+    invoice, retry_errors, retry_caught = _try_validate(retry_content)
     if invoice is not None:
-        return invoice
+        return invoice, retry_content, retry_caught
     raise AiError(
         f"AI output failed validation even after retry ({retry_errors}). "
         f"Last model output: {retry_content[:_MAX_ECHO_OUTPUT]}"
     )
 
 
-def _try_validate(content: str) -> tuple[InvoiceData | None, str]:
+def _retry_bad_iban(
+    client: OpenRouterClient,
+    messages: list[dict[str, Any]],
+    content: str,
+    invoice: InvoiceData,
+    caught: list[warnings.WarningMessage],
+) -> tuple[InvoiceData, list[warnings.WarningMessage]]:
+    """One corrective redo when the extracted IBAN is present but invalid.
+
+    A schema-valid redo answer wins outright (even with a still-invalid or
+    now-null IBAN); an unusable or failed redo keeps the original invoice
+    with its warnings. Never raises: an invalid IBAN is warn-only, never a
+    booking blocker.
+    """
+    if invoice.iban is None:
+        return invoice, caught
+    problem = iban_problem(invoice.iban)
+    if problem is None:
+        return invoice, caught
+    retry_messages = [
+        *messages,
+        {"role": "assistant", "content": content},
+        {
+            "role": "user",
+            "content": _IBAN_RETRY_INSTRUCTION.format(iban=invoice.iban, problem=problem),
+        },
+    ]
+    try:
+        retry_content = client.chat(retry_messages)
+    except (AiError, ResponseFormatUnsupported):
+        return invoice, caught
+    corrected, _, corrected_caught = _try_validate(retry_content)
+    if corrected is None:
+        return invoice, caught
+    return corrected, corrected_caught
+
+
+def _try_validate(
+    content: str,
+) -> tuple[InvoiceData | None, str, list[warnings.WarningMessage]]:
     data = _extract_json_object(content)
     if data is None:
-        return None, "output was not a parseable JSON object"
+        return None, "output was not a parseable JSON object", []
+    # Free-form fallback (ResponseFormatUnsupported) can hallucinate the
+    # converter-only key; extra="forbid" would burn the retry for no reason.
+    data.pop("parsed_by", None)
     from pydantic import ValidationError
 
-    try:
-        return InvoiceData.model_validate(data), ""
-    except ValidationError as exc:
-        return None, _format_validation_errors(exc)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            invoice: InvoiceData | None = InvoiceData.model_validate(data)
+            errors = ""
+        except ValidationError as exc:
+            invoice = None
+            errors = _format_validation_errors(exc)
+    return invoice, errors, caught
 
 
 def _format_validation_errors(exc: Exception) -> str:

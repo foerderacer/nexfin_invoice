@@ -39,7 +39,9 @@ Field rules:
   119.00 → due_skonto = deadline date, amount_skonto = -115.43). Emit `due_skonto` and
   `amount_skonto` together, or leave both null — never only one of them.
 - currency: ISO 4217 code (e.g. EUR, USD, CHF).
-- iban: the payment IBAN, uppercase, without spaces or hyphens; null when absent.
+- iban: the payment IBAN, uppercase, without spaces or hyphens; null when absent. Verify the
+  mod-97 checksum; if unsure between similar glyphs (0/O, 1/I/l), prefer the reading that
+  yields a valid checksum.
 - account_holder: the holder of the payment account (the payee), null when absent.
 - reference: the payment reference / Verwendungszweck / transfer reference, null when absent.
 - category: {category_rule}

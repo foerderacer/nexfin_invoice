@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from decimal import Decimal
 
 import httpx
@@ -34,6 +35,7 @@ def test_zugferd_path_signs_invoice_negative(tmp_path) -> None:
     pdf = make_zugferd_pdf(tmp_path / "invoice.pdf", CII_INVOICE_XML)
     result = convert(pdf, Config())
     assert result.method == "zugferd"
+    assert result.invoice.parsed_by == result.method
     assert result.invoice.amount == Decimal("-119.00")
     assert "amount: -119.00" in result.markdown
     assert "# RE-2026-0912 — Muller GmbH" in result.markdown
@@ -76,6 +78,7 @@ def test_force_ai_uses_text_path(tmp_path, monkeypatch) -> None:
     log = patch_ai_client(monkeypatch, ok)
     result = convert(pdf, Config(api_key="k"), force_ai=True)
     assert result.method == "ai-text"
+    assert result.invoice.parsed_by == result.method
     assert result.invoice.id == "RE-2026-0777"
     sent_text = log.payloads[0]["messages"][1]["content"][0]["text"]
     assert "RE-2026-0777" in sent_text
@@ -86,6 +89,7 @@ def test_scanned_pdf_falls_back_to_vision(tmp_path, monkeypatch) -> None:
     log = patch_ai_client(monkeypatch, ok)
     result = convert(pdf, Config(api_key="k"))
     assert result.method == "ai-vision"
+    assert result.invoice.parsed_by == result.method
     user_content = log.payloads[0]["messages"][1]["content"]
     image_parts = [part for part in user_content if part["type"] == "image_url"]
     assert image_parts
@@ -128,3 +132,23 @@ def test_ai_failure_propagates_as_ai_error(tmp_path, monkeypatch) -> None:
     patch_ai_client(monkeypatch, lambda request: httpx.Response(503, text="overloaded"))
     with pytest.raises(ConversionError, match="503"):
         convert(pdf, Config(api_key="k"), force_ai=True)
+
+
+def test_zugferd_invalid_iban_warns_without_ai(tmp_path, monkeypatch) -> None:
+    xml = CII_INVOICE_XML.replace(
+        b"<ram:IBANID>DE89 3704-0044 0532 0130 00</ram:IBANID>",
+        b"<ram:IBANID>DE89 3704-0044 0532 0130 01</ram:IBANID>",
+    )
+    pdf = make_zugferd_pdf(tmp_path / "invoice.pdf", xml)
+    log = patch_ai_client(monkeypatch, ok)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = convert(pdf, Config(api_key="k"))
+
+    assert result.method == "zugferd"
+    assert result.invoice.iban == "DE89370400440532013001"
+    assert log.payloads == []
+    warned = [entry for entry in caught if issubclass(entry.category, UserWarning)]
+    assert len(warned) == 1
+    assert "mod-97" in str(warned[0].message)

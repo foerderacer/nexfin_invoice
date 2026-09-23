@@ -25,6 +25,7 @@ def sample_invoice(**overrides: object) -> InvoiceData:
         "iban": "DE89370400440532013000",
         "account_holder": "Muller GmbH",
         "reference": "RE-2026-0912",
+        "parsed_by": "zugferd",
         "line_items": [
             {"description": "Widget", "quantity": "2", "amount": "45.00"},
             {"description": "Shipping", "amount": "29.00"},
@@ -49,6 +50,7 @@ reference: RE-2026-0912
 status: open
 booked: ""
 paid_date: ""
+parsed_by: zugferd
 ---
 
 # RE-2026-0912 — Muller GmbH
@@ -76,6 +78,7 @@ currency: EUR
 status: open
 booked: ""
 paid_date: ""
+parsed_by: zugferd
 ---
 
 # RE-2026-0912 — Muller GmbH
@@ -114,6 +117,22 @@ def test_skonto_zero_renders_raw() -> None:
 def test_skonto_omitted_when_absent() -> None:
     text = render(sample_invoice())
     assert "skonto" not in text
+
+
+def test_parsed_by_rendered_unquoted_last() -> None:
+    text = render(sample_invoice())
+    assert "parsed_by: zugferd\n" in text
+    assert '"zugferd"' not in text
+
+
+def test_parsed_by_omitted_when_absent() -> None:
+    text = render(sample_invoice(parsed_by=None))
+    assert "parsed_by" not in text
+
+
+def test_parsed_by_renders_after_paid_date() -> None:
+    text = render(sample_invoice())
+    assert text.index("paid_date:") < text.index("parsed_by:")
 
 
 def test_amount_always_two_decimals() -> None:

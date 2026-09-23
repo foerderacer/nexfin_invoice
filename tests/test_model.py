@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from nexfin_invoice.model import (
     InvoiceData,
     LineItem,
+    iban_problem,
     parse_decimal_number,
     structured_output_schema,
 )
@@ -34,6 +35,7 @@ def test_minimal_defaults() -> None:
     assert invoice.status == "open"
     assert invoice.booked == ""
     assert invoice.paid_date == ""
+    assert invoice.parsed_by is None
     assert invoice.line_items == []
     assert invoice.amount == Decimal("-119.00")
     assert invoice.currency == "EUR"
@@ -89,6 +91,14 @@ def test_iban_bad_checksum_warns_only() -> None:
 def test_iban_bad_format_warns_only() -> None:
     with pytest.warns(UserWarning, match="valid IBAN"):
         InvoiceData(**base_data(iban="XX00"))
+
+
+def test_iban_problem() -> None:
+    assert iban_problem("DE89370400440532013000") is None
+    assert iban_problem("DE89370400440532013001") == (
+        "iban 'DE89370400440532013001' fails the ISO 7064 mod-97 checksum"
+    )
+    assert iban_problem("XX00") == "iban 'XX00' does not look like a valid IBAN"
 
 
 def test_empty_optional_strings_become_none() -> None:
@@ -206,6 +216,21 @@ def test_line_item_rejects_unknown_fields() -> None:
         LineItem(description="x", bogus=1)
 
 
+# -- parsed_by (converter provenance) --------------------------------------
+
+
+@pytest.mark.parametrize("value", ["zugferd", "ai-text", "ai-vision", None])
+def test_parsed_by_accepts_extraction_paths(value: object) -> None:
+    invoice = InvoiceData(**base_data(parsed_by=value))
+    assert invoice.parsed_by == value
+
+
+@pytest.mark.parametrize("value", ["weird", "AI-Text", "ocr", ""])
+def test_parsed_by_rejects_other_values(value: str) -> None:
+    with pytest.raises(ValidationError):
+        InvoiceData(**base_data(parsed_by=value))
+
+
 def test_parse_decimal_number() -> None:
     assert parse_decimal_number(" 119,00 ") == Decimal("119.00")
     assert parse_decimal_number(119) == Decimal("119")
@@ -223,6 +248,7 @@ def test_structured_output_schema_is_strict() -> None:
     properties = inner["properties"]
     for managed in ("status", "booked", "paid_date"):
         assert managed not in properties
+    assert "parsed_by" not in properties
     assert "due_skonto" in properties
     assert "amount_skonto" in properties
     assert inner["required"] == list(properties)

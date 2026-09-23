@@ -35,11 +35,21 @@ _FIELD_ORDER = (
     "status",
     "booked",
     "paid_date",
+    "parsed_by",
 )
 
 # Optional fields: omitted entirely when empty/None.
 _OPTIONAL_FIELDS = frozenset(
-    {"category", "account", "iban", "account_holder", "reference", "due_skonto", "amount_skonto"}
+    {
+        "category",
+        "account",
+        "iban",
+        "account_holder",
+        "reference",
+        "due_skonto",
+        "amount_skonto",
+        "parsed_by",
+    }
 )
 
 # Amounts render as raw numbers (never quoted), unlike all other scalars.
@@ -78,6 +88,7 @@ def render(invoice: InvoiceData) -> str:
         "status": invoice.status,
         "booked": invoice.booked,
         "paid_date": invoice.paid_date,
+        "parsed_by": invoice.parsed_by or "",
         "due_skonto": "" if invoice.due_skonto is None else _date_text(invoice.due_skonto),
         "amount_skonto": "" if invoice.amount_skonto is None else f"{invoice.amount_skonto:.2f}",
     }

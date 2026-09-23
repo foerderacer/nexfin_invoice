@@ -47,10 +47,16 @@ nexfin (the ledger app) watches an inbox folder and books these files.
   skonto never blocks booking.
 - **Extraction path** — one of `zugferd` (deterministic XML), `ai-text`
   (PDF text + AI), `ai-vision` (rendered page images + AI). Dispatch order
-  is fixed; vision only when no usable text layer.
+  is fixed; vision only when no usable text layer. The path is persisted as
+  `parsed_by` in the front matter (converter provenance, display-only).
 - **Structured output** — OpenRouter `response_format: json_schema` request
   mode, generated from the `InvoiceData` pydantic model minus the managed
   fields, strict (`additionalProperties: false`, all fields required).
+- **AI IBAN recheck** — after AI extraction, a present-but-invalid `iban`
+  (format / ISO 7064 mod-97) triggers exactly one corrective redo of the
+  extraction; `iban: null` never does. A still-invalid IBAN is kept
+  warn-only — the recheck never blocks booking. The ZUGFeRD path is
+  untouched.
 
 ## Invariants worth keeping
 

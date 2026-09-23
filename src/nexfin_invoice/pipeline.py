@@ -65,6 +65,7 @@ def convert(
         else:
             if extracted is not None:
                 invoice = _signed(extracted.data, is_credit_note=extracted.is_credit_note)
+                invoice = invoice.model_copy(update={"parsed_by": "zugferd"})
                 return ConversionResult(
                     source=path, markdown=render(invoice), invoice=invoice, method="zugferd"
                 )
@@ -133,4 +134,5 @@ def _convert_with_ai(path: Path, config: Config, *, xml_reason: str | None) -> C
         raise ConversionError(str(exc)) from exc
 
     method = "ai-vision" if images else "ai-text"
+    invoice = invoice.model_copy(update={"parsed_by": method})
     return ConversionResult(source=path, markdown=render(invoice), invoice=invoice, method=method)

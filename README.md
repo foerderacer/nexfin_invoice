@@ -18,6 +18,10 @@ For each PDF, three extraction strategies are tried in order:
    rendered to PNG (pypdfium2, max 5 pages) and sent to a vision-capable
    model.
 
+AI-extracted IBANs are rechecked after extraction: a present-but-invalid
+IBAN triggers one corrective redo of the extraction before falling back to
+the warn-only semantics described under *Validation guarantees*.
+
 If ZUGFeRD data is incomplete (e.g. a missing due date), conversion fails
 rather than writing a file nexfin would flag as *needs attention* — re-run
 with `--ai` to let the model fill the gaps. A signed two-decimal amount is
@@ -103,7 +107,9 @@ two-decimal raw amount scalars (`amount: -119.00`), quoted empty strings,
 `status: open` / `booked: ""` / `paid_date: ""`. Dates are validated calendar
 dates, currency an ISO 4217 code, IBANs are normalized (spaces/hyphens
 stripped, uppercased) with a warn-only mod-97 checksum check — mirroring the
-nexfin pay dialog, which warns but never blocks.
+nexfin pay dialog, which warns but never blocks. Every converted file also
+carries `parsed_by` (`zugferd` | `ai-text` | `ai-vision`) as the last key:
+converter provenance, display-only in nexfin and never part of the AI schema.
 
 The optional Skonto fields are atomic: `due_skonto` and `amount_skonto`
 appear together only when the document states both a deadline and a
